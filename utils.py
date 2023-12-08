@@ -14,6 +14,9 @@ from skimage.filters import threshold_otsu
 import opencc
 import easyocr
 
+from tqdm import tqdm
+from unittest.mock import MagicMock
+
 
 torrents_path = '/Users/benjidayan/Documents/torrents/hunter/'
 fn = torrents_path + 'LR_Chinese_001_720P[52KHD].ts'
@@ -165,25 +168,31 @@ class VideoSubExtractor:
 
         self.text_ts = []  # ordered list of (frame_n_start, frame_n_end, text) triples
 
-    def get_subs(self):
-        subs = []
-        while self.frame_n < self.frame_max:
+    def get_subs(self, max_n=None, use_tqdm=False):
+        self.subs = []
+        # make tqdm bar, setting to mock object if not tqdm
+        pbar = tqdm(total=self.frame_max) if use_tqdm else MagicMock()
+        pbar.n = self.frame_n
+        while self.frame_n < (self.frame_max if max_n is None else max_n):
             ret, frame = get_frame_n(self.cap, self.frame_n)
             if not ret:
                 break
             text = process_frame(frame)
             if text:
                 start_n, end_n = self.get_start_end_n(self.frame_n)
-                subs.append((start_n, end_n, text))
+                self.subs.append((start_n, end_n, text))
                 self.frame_n = end_n  # we will then add frame_skip to this anyway
+                pbar.n = self.frame_n
     
             self.frame_n += self.frame_skip
-        return subs
+            pbar.update(self.frame_skip)
     
     def get_start_end_n(self, frame_n):
         """Finds the earliest frame that has text, and the latest frame that has text"""
-        start_n = frame_n
-        end_n = frame_n
+        # optimal delta can be estimated by solving some equations with expected sub lengths
+        start_n = self.get_last_same_frame(frame_n, delta=-5)
+        end_n = self.get_last_same_frame(frame_n, delta=16)
+        return start_n, end_n
         
     def get_last_same_frame(self, frame_n, delta=-10):
         """Returns the first frame that is different from the current frame.
