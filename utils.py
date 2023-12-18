@@ -17,6 +17,8 @@ import easyocr
 from tqdm import tqdm
 from unittest.mock import MagicMock
 
+from segment_anything import SamAutomaticMaskGenerator
+
 
 torrents_path = '/Users/benjidayan/Documents/torrents/hunter/'
 fn = torrents_path + 'LR_Chinese_001_720P[52KHD].ts'
@@ -143,6 +145,41 @@ def frame_to_binary_text_pixels(img):
     out = grow_thin_binary(out)
     return out
 
+
+def frame_to_binary_text_pixels_with_SAM(img, sam, bright_thresh=230):
+    mask_generator = SamAutomaticMaskGenerator(sam)
+    masks = mask_generator.generate(img)
+
+    potential_masks = []
+
+    for mask in masks:
+        bbox = mask['bbox']
+        x, y, w, h = bbox
+        if 34 < w < 42 and 36 < h < 44:
+            potential_masks.append(mask)
+
+    output_mask = np.zeros(img.shape[:2], dtype=np.uint8)
+
+    for mask in potential_masks:
+        # mask is a nice output dict
+        seg_mask = mask['segmentation']
+        bbox = mask['bbox']
+        x, y, w, h = bbox
+
+        bbox_extract_seg_mask = seg_mask[y:y+h, x:x+w]
+        bbox_extract = img[y:y+h, x:x+w]
+        bbox_extract_gray = cv.cvtColor(bbox_extract, cv.COLOR_RGB2GRAY)
+        bbox_extract_img_bright = bbox_extract_gray > bright_thresh
+        bbox_extract_char_mask = bbox_extract_img_bright & bbox_extract_seg_mask
+
+        # could consider running grow_thin_binary on bbox_extract_char_mask
+
+        output_mask[y:y+h, x:x+w] = bbox_extract_char_mask
+
+    return output_mask
+    
+
+
 def frame_to_text(img):
     """The frame may contain a horizontal line of text, or perhaps nothing.
     Actually that was for tesseract --psm 7. Now we are using easyocr, which
@@ -168,7 +205,7 @@ class VideoSubExtractor:
 
         self.text_ts = []  # ordered list of (frame_n_start, frame_n_end, text) triples
 
-    def get_subs(self, max_n=None, use_tqdm=False):
+    def get_subs(self, max_n=None, use_tqdm=False, out_file_fn=None):
         self.subs = []
         # make tqdm bar, setting to mock object if not tqdm
         pbar = tqdm(total=self.frame_max) if use_tqdm else MagicMock()
@@ -179,8 +216,15 @@ class VideoSubExtractor:
                 break
             text = process_frame(frame)
             if text:
+                # remove white trailing \n, just in case.
+                # e.g. '那孩子眼中的光芒\n就跟他老爸是一个样'
+
+                text = text.rstrip()
                 start_n, end_n = self.get_start_end_n(self.frame_n)
                 self.subs.append((start_n, end_n, text))
+                if out_file_fn:
+                    with open(out_file_fn, 'a') as f:
+                        f.write('{%s}{%s}%s\n' % (start_n, end_n, text))
                 self.frame_n = end_n  # we will then add frame_skip to this anyway
                 pbar.n = self.frame_n
     
@@ -237,4 +281,109 @@ class VideoSubExtractor:
             return -1
         elif frame_current >= self.frame_max:
             return self.frame_max
+        
+    def show_frame(self, frame_n):
+        ret, frame = get_frame_n(self.cap, frame_n)
+        if not ret:
+            return
+        plt.imshow(frame)
+        plt.show()
             
+
+
+
+def process_output_text(fn):
+    """Output was of form frame_start frame_end text.
+    Unfortunately text itself can contain some \n.
+    """
+    import re
+
+    file = 'ep1.txt'
+    with open(fn, 'r') as f:
+        stuff = f.readlines()
+
+    # get indices of lines which begin with \d* \d* .*
+    indices = [i for i, line in enumerate(stuff) if re.match('\d* \d* .*', line)]
+    outputs = []
+
+    for i in range(len(indices)):
+        start_idx = indices[i]
+        end_idx = indices[i+1] if i+1 < len(indices) else len(stuff)
+        text = re.match('[{]\d*[@] \d* (.*)', stuff[start_idx]).group(1)
+        start_frame, end_frame = re.match('(\d*) (\d*) .*', stuff[start_idx]).groups()
+        for j in range(start_idx+1, end_idx):
+            text += stuff[j]
+
+        outputs.append((int(start_frame), int(end_frame), text))
+
+    return outputs
+
+
+
+def show_anns(anns):
+    if len(anns) == 0:
+        return
+    sorted_anns = sorted(anns, key=(lambda x: x['area']), reverse=True)
+    ax = plt.gca()
+    ax.set_autoscale_on(False)
+
+    img = np.ones((sorted_anns[0]['segmentation'].shape[0], sorted_anns[0]['segmentation'].shape[1], 4))
+    img[:,:,3] = 0
+    for ann in sorted_anns:
+        m = ann['segmentation']
+        color_mask = np.concatenate([np.random.random(3), [0.35]])
+        img[m] = color_mask
+    ax.imshow(img)
+
+
+def show_mask(mask, ax, random_color=False):
+    if random_color:
+        color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0)
+    else:
+        color = np.array([30/255, 144/255, 255/255, 0.6])
+    h, w = mask.shape[-2:]
+    mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
+    ax.imshow(mask_image)
+    
+def show_points(coords, labels, ax, marker_size=375):
+    pos_points = coords[labels==1]
+    neg_points = coords[labels==0]
+    ax.scatter(pos_points[:, 0], pos_points[:, 1], color='green', marker='*', s=marker_size, edgecolor='white', linewidth=1.25)
+    ax.scatter(neg_points[:, 0], neg_points[:, 1], color='red', marker='*', s=marker_size, edgecolor='white', linewidth=1.25)   
+    
+def show_box(box, ax):
+    x0, y0 = box[0], box[1]
+    w, h = box[2], box[3]
+    ax.add_patch(plt.Rectangle((x0, y0), w, h, edgecolor='green', facecolor=(0,0,0,0), lw=2))  
+
+
+def mask_to_char(img, mask, bright_thresh=230):
+    """
+    Extracts the character from the image, given the mask.
+    note that a valid character should have roughly a bbox of w, h = 38, 40
+    problem is that sometimes only half of a two radical character is detected.
+
+    """
+    # mask is a nice output dict
+    seg_mask = mask['segmentation']
+    bbox = mask['bbox']
+    x, y, w, h = bbox
+    bbox_extract_seg_mask = seg_mask[y:y+h, x:x+w]
+    bbox_extract = img[y:y+h, x:x+w]
+    bbox_extract_gray = cv.cvtColor(bbox_extract, cv.COLOR_RGB2GRAY)
+    img_bright = bbox_extract_gray > bright_thresh
+    char_mask = img_bright & bbox_extract_seg_mask
+    return char_mask  # binary mask of character
+
+
+
+# ffmpeg .ts to .mp4
+# ffmpeg -i input.ts output.mp4
+
+if __name__  == '__main__':
+    vse = VideoSubExtractor('./out3.mp4')
+    vse.get_subs(use_tqdm=True, out_file_fn='ep1.txt')
+
+
+
+
