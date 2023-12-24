@@ -146,7 +146,7 @@ def frame_to_binary_text_pixels(img):
     return out
 
 
-def frame_to_binary_text_pixels_with_SAM(img, sam, bright_thresh=230):
+def frame_to_binary_text_pixels_with_SAM(img, sam, bright_thresh=230, grow=False):
     mask_generator = SamAutomaticMaskGenerator(sam)
     masks = mask_generator.generate(img)
 
@@ -173,6 +173,8 @@ def frame_to_binary_text_pixels_with_SAM(img, sam, bright_thresh=230):
         bbox_extract_char_mask = bbox_extract_img_bright & bbox_extract_seg_mask
 
         # could consider running grow_thin_binary on bbox_extract_char_mask
+        if grow:
+            bbox_extract_char_mask = grow_thin_binary(bbox_extract_char_mask)
 
         output_mask[y:y+h, x:x+w] = bbox_extract_char_mask
 
@@ -180,12 +182,14 @@ def frame_to_binary_text_pixels_with_SAM(img, sam, bright_thresh=230):
     
 
 
-def frame_to_text(img):
+def frame_to_text(img, sam=None):
     """The frame may contain a horizontal line of text, or perhaps nothing.
     Actually that was for tesseract --psm 7. Now we are using easyocr, which
     is better at detecting text in images, and we just pass in everything."""
-
-    binary_text_map = frame_to_binary_text_pixels(img)
+    if sam is None:
+        binary_text_map = frame_to_binary_text_pixels(img)
+    else:
+        binary_text_map = frame_to_binary_text_pixels_with_SAM(img, sam, grow=True)
 
     # Do OCR
     ocr = ocr_frame(binary_text_map)
@@ -201,7 +205,7 @@ class VideoSubExtractor:
         self.frame_max = int(self.cap.get(cv.CAP_PROP_FRAME_COUNT))
 
         # it's roughly 30 fps. We should probably check for text every second or so?
-        self.frame_skip = 35
+        self.frame_skip = 20
 
         self.text_ts = []  # ordered list of (frame_n_start, frame_n_end, text) triples
 
