@@ -19,6 +19,9 @@ from unittest.mock import MagicMock
 
 from segment_anything import SamAutomaticMaskGenerator
 
+# does OCR
+reader = easyocr.Reader(['ch_tra'])
+
 
 torrents_path = '/Users/benjidayan/Documents/torrents/hunter/'
 fn = torrents_path + 'LR_Chinese_001_720P[52KHD].ts'
@@ -89,7 +92,6 @@ def ocr_frame(binary_frame):
     text_frame = 255 - 255*binary_frame
     cv.imwrite('temp.png', text_frame)
 
-    reader = easyocr.Reader(['ch_tra'])
     result = reader.readtext('temp.png')
 
     result = '\n'.join([res[1] for res in result])
@@ -109,9 +111,54 @@ def process_frame(frame):
     # top = frame[:44, :]
     # bottom = frame[44:, :]
 
-    text = frame_to_text(frame)
+    text, binary_text_map = frame_to_text(frame)
 
-    return text
+    return text, binary_text_map
+
+
+def quick_process_frame_n2(sam, cap, n, rgb2bgr=False, **kwargs):
+    """Like quick_process_frame_n, but also displays original frame as an extra plot,
+    and has all 3 plots in one subplot 1x3 grid"""
+    ret, frame = get_frame_n(cap, n)
+    if rgb2bgr:
+        frame = cv.cvtColor(frame, cv.COLOR_RGB2BGR)
+
+    output_mask = frame_to_binary_text_pixels(frame)
+    output_mask_sam = frame_to_binary_text_pixels_with_SAM(frame, sam, **kwargs)
+    # output_mask_sam_grow_direct = grow_thin_binary(output_mask_sam)
+    output_mask_sam_grow = frame_to_binary_text_pixels_with_SAM(frame, sam, grow=True)
+
+    plt.figure(figsize=(15, 5))
+    gs = plt.GridSpec(2, 2)
+    gs.update(wspace=0.01, hspace=0.01)
+
+    plt.subplot(gs[0]).imshow(frame)
+    plt.subplot(gs[1]).imshow(output_mask)
+    plt.subplot(gs[2]).imshow(output_mask_sam)
+    plt.subplot(gs[3]).imshow(output_mask_sam_grow)
+
+    for i in range(2):
+        for j in range(2):
+            ax = plt.subplot(gs[i, j])
+            ax.set_axis_off()
+            ax.set_aspect('equal')
+
+    plt.show()
+
+
+    ocr = ocr_frame(output_mask)
+    print(ocr)
+    print('##########')
+    ocr_sam = ocr_frame(output_mask_sam)
+    print(ocr_sam)
+    # print('##########')
+    # ocr_sam_grow_direct = ocr_frame(output_mask_sam_grow_direct)
+    # print(ocr_sam_grow_direct)
+    print('##########')
+    ocr_sam_grow = ocr_frame(output_mask_sam_grow)
+    print(ocr_sam_grow)
+    # return ocr, ocr_sam, ocr_sam_grow_direct, ocr_sam_grow
+    return ocr, ocr_sam, ocr_sam_grow
 
 
 def frame_to_binary_text_pixels(img):
@@ -172,11 +219,11 @@ def frame_to_binary_text_pixels_with_SAM(img, sam, bright_thresh=230, grow=False
         bbox_extract_img_bright = bbox_extract_gray > bright_thresh
         bbox_extract_char_mask = bbox_extract_img_bright & bbox_extract_seg_mask
 
-        # could consider running grow_thin_binary on bbox_extract_char_mask
-        if grow:
-            bbox_extract_char_mask = grow_thin_binary(bbox_extract_char_mask)
-
         output_mask[y:y+h, x:x+w] = bbox_extract_char_mask
+
+    # There's some weird bug if we do it in the loop above??
+    if grow:
+        output_mask = grow_thin_binary(output_mask)
 
     return output_mask
     
@@ -193,32 +240,38 @@ def frame_to_text(img, sam=None):
 
     # Do OCR
     ocr = ocr_frame(binary_text_map)
-    return ocr
+    return ocr, binary_text_map
 
 
 class VideoSubExtractor:
 
-    def __init__ (self, video_fn):
+    def __init__ (self, video_fn, sam=None):
         self.video_fn = video_fn
         self.cap = cv.VideoCapture(video_fn)
         self.frame_n = 0
         self.frame_max = int(self.cap.get(cv.CAP_PROP_FRAME_COUNT))
+        self.sam=sam
 
         # it's roughly 30 fps. We should probably check for text every second or so?
         self.frame_skip = 20
 
         self.text_ts = []  # ordered list of (frame_n_start, frame_n_end, text) triples
 
-    def get_subs(self, max_n=None, use_tqdm=False, out_file_fn=None):
+    def get_subs(self, max_n=None, use_tqdm=False, save_frames=False, out_folder=None):
         self.subs = []
         # make tqdm bar, setting to mock object if not tqdm
         pbar = tqdm(total=self.frame_max) if use_tqdm else MagicMock()
         pbar.n = self.frame_n
         while self.frame_n < (self.frame_max if max_n is None else max_n):
             ret, frame = get_frame_n(self.cap, self.frame_n)
+            frame[3:-1, :]  # is now 88 Y 550 X
             if not ret:
                 break
-            text = process_frame(frame)
+            text, binary_text_map = frame_to_text(frame, sam=self.sam)
+            if save_frames:
+                if out_folder:
+                    cv.imwrite(os.path.join(out_folder, 'frame_%d.png' % self.frame_n), frame)
+                    cv.imwrite(os.path.join(out_folder, 'frame_%d_binary.png' % self.frame_n), binary_text_map)
             if text:
                 # remove white trailing \n, just in case.
                 # e.g. '那孩子眼中的光芒\n就跟他老爸是一个样'
@@ -226,9 +279,10 @@ class VideoSubExtractor:
                 text = text.rstrip()
                 start_n, end_n = self.get_start_end_n(self.frame_n)
                 self.subs.append((start_n, end_n, text))
-                if out_file_fn:
-                    with open(out_file_fn, 'a') as f:
+                if out_folder:
+                    with open(os.path.join(out_folder, 'out.sub'), 'a') as f:
                         f.write('{%s}{%s}%s\n' % (start_n, end_n, text))
+
                 self.frame_n = end_n  # we will then add frame_skip to this anyway
                 pbar.n = self.frame_n
     
