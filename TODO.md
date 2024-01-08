@@ -14,3 +14,15 @@
 
 # First goal: write code to plot all bboxes that have <= box sized width and within line tramlines.
 
+
+
+whisper input_audio_file --language Chinese --model medium --output_format srt
+
+Actually the python interface is pretty good
+- Get Whisper working properly
+  - figure out how to run it on a whole file, and link it up to OCR srts
+  - \n newlines and grouping
+  - add keywords and names
+- Figure out how to combine two imperfect translations into one better one
+
+- finally make everything into a nice pipeline.
