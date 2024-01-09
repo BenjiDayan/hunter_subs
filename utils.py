@@ -75,6 +75,8 @@ def grow_thin_binary(frame, threshold_num_pixels=None):
     return binary.astype(np.uint8)
 
 
+cc = opencc.OpenCC('t2s')
+
 # This is worse than easyocr it seems so don't use it!
 def ocr_frame_tesseract(binary_frame):
     """Frame should be good looking text"""
@@ -85,7 +87,6 @@ def ocr_frame_tesseract(binary_frame):
     out = out.decode('utf-8')
 
     # traditional chinese to simplified
-    cc = opencc.OpenCC('t2s')
     out_simplified = cc.convert(out)
     return out_simplified
 
@@ -99,7 +100,6 @@ def ocr_frame(binary_frame):
     result = '\n'.join([res[1] for res in result])
 
     # traditional chinese to simplified
-    cc = opencc.OpenCC('t2s')
     out_simplified = cc.convert(result)
     return out_simplified
 
@@ -379,6 +379,7 @@ def frame_to_text(img, sam=None):
 
 
 class VideoSubExtractor:
+    FRAME_EQUALITY_THRESH = 0.7
 
     def __init__ (self, video_fn, sam=None):
         self.video_fn = video_fn
@@ -460,7 +461,7 @@ class VideoSubExtractor:
         log_and = binary1 & binary2
         num_pixels = max(binary1.sum(), binary2.sum())
         perc_equal = log_and.sum() / num_pixels
-        return perc_equal < 0.8
+        return perc_equal < FRAME_EQUALITY_THRESH
 
 
     def get_first_frame_delta_differing(self, binary, frame_start, frame_delta=-10):
