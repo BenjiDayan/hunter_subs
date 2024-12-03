@@ -89,7 +89,7 @@ def ocr_frame_tesseract(binary_frame):
     out_simplified = cc.convert(out)
     return out_simplified
 
-def ocr_frame(binary_frame):
+def ocr_frame(binary_frame, trad2simple=True):
     """Frame should be good looking text"""
     text_frame = 255 - 255*binary_frame
     cv.imwrite('temp.png', text_frame)
@@ -98,6 +98,9 @@ def ocr_frame(binary_frame):
 
     result = '\n'.join([res[1] for res in result])
 
+    if not trad2simple:
+        return result
+    
     # traditional chinese to simplified
     cc = opencc.OpenCC('t2s')
     out_simplified = cc.convert(result)
@@ -361,7 +364,7 @@ def frame_to_binary_text_pixels_with_SAM(img, sam, bright_thresh=230, grow=False
     
 
 
-def frame_to_text(img, sam=None):
+def frame_to_text(img, sam=None, trad2simple=True):
     """The frame may contain a horizontal line of text, or perhaps nothing.
     Actually that was for tesseract --psm 7. Now we are using easyocr, which
     is better at detecting text in images, and we just pass in everything."""
@@ -374,7 +377,7 @@ def frame_to_text(img, sam=None):
         binary_text_map = frame_to_binary_text_pixels_with_SAM(img, sam, grow=True)
 
     # Do OCR
-    ocr = ocr_frame(binary_text_map)
+    ocr = ocr_frame(binary_text_map, trad2simple=trad2simple)
     return ocr, binary_text_map
 
 
@@ -393,7 +396,7 @@ class VideoSubExtractor:
         self.text_ts = []  # ordered list of (frame_n_start, frame_n_end, text) triples
 
     # def get_subs(self, max_n=None, use_tqdm=False, save_frames=False, out_folder=None):
-    def get_subs(self, max_n=None, use_tqdm=False, out_file=None):
+    def get_subs(self, max_n=None, use_tqdm=False, out_file=None, trad2simple=True):
         # os.makedirs(out_folder, exist_ok=True)
     
         self.subs = []
@@ -406,7 +409,7 @@ class VideoSubExtractor:
             # frame[3:-1, :]  # is now 88 Y 550 X
             if not ret:
                 break
-            text, binary_text_map = frame_to_text(frame, sam=self.sam)
+            text, binary_text_map = frame_to_text(frame, sam=self.sam, trad2simple=trad2simple)
             # if save_frames:
             #     if out_folder:
             #         cv.imwrite(os.path.join(out_folder, 'frame_%d.png' % self.frame_n), frame)
