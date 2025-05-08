@@ -1,23 +1,57 @@
+"""
+This script processes video files and subtitles using Google's Gemini AI model to correct OCR-generated subtitles.
+It maintains original timestamps while improving subtitle accuracy through AI-powered correction.
+"""
+
 import os
 import time
 import utils
-API_KEY = os.environ['GEMINI_API_KEY']
-import google.generativeai as genai
-model = genai.GenerativeModel("gemini-1.5-flash")
+# API_KEY = os.environ['GEMINI_API_KEY']
+# import google.generativeai as genai
+# model = genai.GenerativeModel("gemini-1.5-flash")
 
 import subprocess
 TEMP_SLICE_FN = 'temp_subtitle_slice.mp4'
-def extract_subtitle_slice(fn):
+TEMP_TIME_SLICE_FN = 'temp_time_slice.mp4'
+
+def extract_subtitle_slice(fn, out_file=TEMP_SLICE_FN):
+    """
+    Extracts a specific portion of the video containing subtitles using ffmpeg.
+    
+    Args:
+        fn (str): Path to the input video file
+    """
     mp4_fn = fn.replace('.ts', '.mp4')
-    # ffmpeg -i ./LR_Chinese_001_720P\[52KHD\].ts -filter:v "crop=530:93:380:555" -c:a copy out3.mp4
-    subprocess.run(['ffmpeg', '-y', '-i', mp4_fn, '-filter:v', 'crop=530:93:380:555', '-c:a', 'copy', TEMP_SLICE_FN])
+    # ffmpeg command to crop the video to the subtitle area
+    # crop=530:93:380:555 specifies the dimensions and position of the subtitle area
+    subprocess.run(['ffmpeg', '-y', '-i', mp4_fn, '-filter:v', 'crop=530:93:380:555', '-c:a', 'copy', out_file])
+
+def extract_time_slice(fn, start_time, duration):
+    """
+    Extracts a time slice from the video using ffmpeg.
+    
+    Args:
+        fn (str): Path to the input video file
+        start_time (str): Start time in format HH:MM:SS
+        duration (str): Duration in format HH:MM:SS
+    """
+    mp4_fn = fn.replace('.ts', '.mp4')
+    # ffmpeg command to extract a time slice
+    subprocess.run(['ffmpeg', '-y', '-i', mp4_fn, '-ss', start_time, '-t', duration, '-c:a', 'copy', TEMP_TIME_SLICE_FN])
+    return TEMP_TIME_SLICE_FN
 
 import re
 
-
-
 def split_text_lines(text: str) -> list[str]:
-    """Converts {s}{e}sub\nsub to {s}{e}sub\\nsub"""
+    """
+    Converts subtitle text with frame timestamps into a list of properly formatted lines.
+    
+    Args:
+        text (str): Input text containing frame timestamps and subtitles
+        
+    Returns:
+        list[str]: List of formatted subtitle lines with proper line breaks
+    """
     if not '{' in text:
         return ''
     text = text[text.index('{'):]
@@ -32,9 +66,17 @@ def split_text_lines(text: str) -> list[str]:
             out[-1] += '\\n' + line
     return out
 
-
 def extract_frame_subset(contents, start_frame=3400, end_frame=41000):
-    """extracts a subset of frames from a subtitle file and returns the subset as a string
+    """
+    Extracts a subset of frames from a subtitle file within a specified frame range.
+    
+    Args:
+        contents (str): The subtitle file contents
+        start_frame (int): Starting frame number
+        end_frame (int): Ending frame number
+        
+    Returns:
+        str: Subtitle content for the specified frame range
     """
     out = []
 
@@ -46,7 +88,15 @@ def extract_frame_subset(contents, start_frame=3400, end_frame=41000):
     return ''.join(out)
 
 def extract_frames(contents):
-    """converts frames to a list of tuples (start_frame, end_frame, subtitle)"""
+    """
+    Converts subtitle content into a list of tuples containing frame information.
+    
+    Args:
+        contents (str): The subtitle file contents
+        
+    Returns:
+        list[tuple]: List of tuples containing (start_frame, end_frame, subtitle)
+    """
     import re
     ptrn = re.compile(r'([{]\d*[}][{]\d*[}])(.*[\r\n][^{]*)',re.MULTILINE)
     frame_sub_pairs = re.findall(ptrn, contents)
@@ -57,46 +107,58 @@ def extract_frames(contents):
         out.append((frame_num, frame_num_end, sub))
     return out
 
-
 if __name__ == '__main__':
-    # example usage:
-    # python gemini_test.py ep1_out_26_08_2024_subset.sub vids/LR_Chinese_001_720P[52KHD].mp4 ep1_out_26_08_2024_subset_gemini_simplified.sub
+    # Example usage:
+    # python gemini_test.py vids/LR_Chinese_001_720P[52KHD].mp4 ep1_out_26_08_2024_subset.sub ep1_out_26_08_2024_subset_gemini_simplified.sub
     # python gemini_test.py ./vids/LR_Chinese_003_720P\[52KHD\].ts ./vids/ep3_ocr.sub ./vids/ep3_gemini.sub   
 
+    # python gemini_test.py  --time-slice="00:02:30,00:04:00" vids/LR_Chinese_001_720P\[52KHD\].ts ep1_out_07_05_2025_subset.sub ep1_out_07_05_2025_subset_gemini_simplified.sub
 
-    # above as a script with argparse for file names
+
+
+    # Parse command line arguments
     import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('input_mp4_file', type=str)
-    parser.add_argument('input_sub_file', type=str)
-    parser.add_argument('output_sub_file', type=str)
+    parser = argparse.ArgumentParser(description='Process video files and correct subtitles using Gemini AI')
+    parser.add_argument('input_mp4_file', type=str, help='Input video file path')
+    parser.add_argument('input_sub_file', type=str, help='Input subtitle file path - generated by OCR/who knows what')
+    parser.add_argument('output_sub_file', type=str, help='Output subtitle file path')
+    parser.add_argument('--time-slice', type=str, help='Time slice to process in format "start_time,duration" (e.g. "00:01:30,00:03:00" for 3 minutes starting at 1:30)')
     args = parser.parse_args()
 
+    # Convert .ts to .mp4 if necessary
     fn = args.input_mp4_file
     mp4_fn = args.input_mp4_file.replace('.ts', '.mp4')
     print(mp4_fn)
     subprocess.run(['ffmpeg', '-y', '-i', fn, '-c:a', 'copy', mp4_fn])
 
-    whole_vid = genai.upload_file(mp4_fn)
-    print(whole_vid.name)
+    # Handle time slice if specified
+    if args.time_slice:
+        start_time, duration = args.time_slice.split(',')
+        print(f"Processing time slice from {start_time} for duration {duration}")
+        mp4_fn = extract_time_slice(mp4_fn, start_time, duration)
 
-    extract_subtitle_slice(args.input_mp4_file)
+    # Upload video to Gemini for processing
+    # whole_vid = genai.upload_file(mp4_fn)
+    # print(whole_vid.name)
+
+    # Extract subtitle slice and process it
+    extract_subtitle_slice(mp4_fn, out_file=TEMP_SLICE_FN)
     foo = utils.VideoSubExtractor(TEMP_SLICE_FN)
     foo.get_subs(max_n=None, use_tqdm=True, out_file=args.input_sub_file, trad2simple=False)
 
-
+    # Read and process subtitle file
     with open(args.input_sub_file) as file:
         my_subs = file.read()
         my_subs = extract_frame_subset(my_subs)
 
-
-    # # wait for whole_vid to be processed
+    # Wait for video processing to complete
     while True:
         if genai.get_file(whole_vid.name).state.value == 2:
             break
         print('waiting for video to be processed...')
         time.sleep(5)
 
+    # Prepare prompt for Gemini AI
     prompt = """
     Please help me extract the subtitles of this video in traditional chinese.
     I already have an initial transcription using OCR, but it has some mistakes - some characters may be missing or incorrectly transcribed.
@@ -116,24 +178,18 @@ if __name__ == '__main__':
     **Initial OCR transcription**:
     """ + my_subs
 
-
+    # Generate corrected subtitles using Gemini AI
     result_final = model.generate_content(
         [whole_vid, "\n\n", prompt]
     )
     print(f"{result_final.text=}")
 
-    # from unittest.mock import MagicMock
-    # result_final = MagicMock()
-    # with open('temp.txt') as file:
-    #     result_final.text = file.read()
-    #     # convert \\n in the output to \n
-    #     result_final.text = result_final.text.replace('\\n', '\n')
-
+    # Convert traditional Chinese to simplified Chinese
     import opencc
-    # traditional chinese to simplified
     cc = opencc.OpenCC('t2s')
     out_simplified = cc.convert(result_final.text)
     
+    # Merge and align corrected subtitles with original timestamps
     a = extract_frames('\n'.join(split_text_lines(out_simplified)))
     b = extract_frames('\n'.join(split_text_lines(my_subs)))
     c = []
@@ -146,7 +202,7 @@ if __name__ == '__main__':
             i += 1
             j += 1
         else:
-            # make sure the LLM hasn't gone backwards
+            # Handle frame alignment edge cases
             if len(c) > 0 and s1 < c[-1][0]:
                 i += 1
             elif s1 < s2:
@@ -160,5 +216,6 @@ if __name__ == '__main__':
                 c.append((s1, e1, sub1))
     out = ''.join([f'{{{s}}}{{{e}}}{sub}' for s, e, sub in c])
 
+    # Write final corrected subtitles to output file
     with open(args.output_sub_file, 'w') as file:
         file.write(out)
